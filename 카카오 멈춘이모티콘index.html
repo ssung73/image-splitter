@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>PNG 이미지 360x360 분할기 (72 DPI 지정)</title>
-  <!-- JSZip 라이브러리 내장 -->
+  <title>PNG 이미지 360x360 분할기 (72 DPI 고정)</title>
+  <!-- JSZip 라이브러리 -->
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <style>
     * { box-sizing: border-box; }
@@ -104,28 +104,28 @@
 
   let slicedImages = [];
 
-  // PNG 헤더 데이터에 72 DPI (pHYs 청크) 정보 주입 함수
-  function setPngDpi72(arrayBuffer) {
-    const data = new Uint8Array(arrayBuffer);
+  // PNG 헤더 바이너리를 직접 분석하여 pHYs(72 DPI) 청크를 정확히 삽입하는 알고리즘
+  function embedDpi72ToPng(pngArrayBuffer) {
+    const data = new Uint8Array(pngArrayBuffer);
     
-    // PNG 시그니처 확인
+    // PNG 헤더 검증 (\x89PNG\r\n\x1a\n)
     if (data[0] !== 0x89 || data[1] !== 0x50 || data[2] !== 0x4E || data[3] !== 0x47) {
-      return arrayBuffer;
+      return pngArrayBuffer;
     }
 
-    // 72 DPI = 2835 PPM (Pixels Per Meter)
-    // pHYs 데이터: X(2835), Y(2835), Unit(1 - Meter)
+    // 72 DPI = 2835 ppm (pixels per meter)
+    // 2835 = 0x00000B13
     const physChunk = new Uint8Array([
-      0x00, 0x00, 0x00, 0x09, // Length: 9
-      0x70, 0x48, 0x59, 0x73, // Type: pHYs
-      0x00, 0x00, 0x0B, 0x13, // Xppm: 2835
-      0x00, 0x00, 0x0B, 0x13, // Yppm: 2835
-      0x01,                   // Unit: meter
-      0x00, 0x00, 0x00, 0x00  // CRC Placeholder
+      0x00, 0x00, 0x00, 0x09, // Length (9 bytes)
+      0x70, 0x48, 0x59, 0x73, // Type ("pHYs")
+      0x00, 0x00, 0x0B, 0x13, // X axis pixels per meter (2835 = 72 DPI)
+      0x00, 0x00, 0x0B, 0x13, // Y axis pixels per meter (2835 = 72 DPI)
+      0x01,                   // Unit specifier: 1 = meter
+      0x00, 0x00, 0x00, 0x00  // CRC32 데이터 들어갈 위치 (16~19 Byte)
     ]);
 
-    // CRC32 계산
-    function calcCRC32(buf, start, length) {
+    // CRC32 계산식
+    function calculateCRC32(buf, start, length) {
       let crc = 0xFFFFFFFF;
       for (let i = start; i < start + length; i++) {
         crc ^= buf[i];
@@ -136,15 +136,33 @@
       return (crc ^ 0xFFFFFFFF) >>> 0;
     }
 
-    const crcVal = calcCRC32(physChunk, 4, 13);
+    // pHYs 청크의 CRC 값 계산 및 기록 (Type + Data 영역 대상 = 13 bytes)
+    const crcVal = calculateCRC32(physChunk, 4, 13);
     const view = new DataView(physChunk.buffer);
-    view.setUint32(17, crcVal, false);
+    view.setUint32(16, crcVal, false);
 
-    // IHDR 청크 직후(인덱스 33)에 pHYs 청크 삽입
+    // IHDR 청크 뒤를 탐색하여 안전한 자리에 pHYs 청크 동적 삽입
+    let insertPosition = 8; // PNG Signature 직후
+    let existingPhysOffset = -1;
+    let existingPhysLength = 0;
+
+    while (insertPosition < data.length) {
+      const length = (data[insertPosition] << 24) | (data[insertPosition+1] << 16) | (data[insertPosition+2] << 8) | data[insertPosition+3];
+      const type = String.fromCharCode(data[insertPosition+4], data[insertPosition+5], data[insertPosition+6], data[insertPosition+7]);
+
+      if (type === 'IHDR') {
+        // IHDR 직후에 삽입
+        insertPosition += 12 + length;
+        break;
+      }
+      insertPosition += 12 + length;
+    }
+
+    // 새로운 파일 생성 (pHYs 주입)
     const newBuffer = new Uint8Array(data.length + physChunk.length);
-    newBuffer.set(data.subarray(0, 33), 0);
-    newBuffer.set(physChunk, 33);
-    newBuffer.set(data.subarray(33), 33 + physChunk.length);
+    newBuffer.set(data.subarray(0, insertPosition), 0);
+    newBuffer.set(physChunk, insertPosition);
+    newBuffer.set(data.subarray(insertPosition), insertPosition + physChunk.length);
 
     return newBuffer.buffer;
   }
@@ -201,12 +219,13 @@
           0, 0, tileWidth, tileHeight
         );
 
+        // 캔버스 바이너리 생성
         const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
-        const arrayBuffer = await blob.arrayBuffer();
+        const rawBuffer = await blob.arrayBuffer();
         
-        // 72 DPI 헤더 정보 주입
-        const dpiBuffer = setPngDpi72(arrayBuffer);
-        const finalBlob = new Blob([dpiBuffer], { type: 'image/png' });
+        // 72 DPI (pHYs) 바이너리 주입
+        const fixedDpiBuffer = embedDpi72ToPng(rawBuffer);
+        const finalBlob = new Blob([fixedDpiBuffer], { type: 'image/png' });
 
         const fileName = `tile_row${r + 1}_col${c + 1}.png`;
         slicedImages.push({ blob: finalBlob, fileName });
@@ -217,7 +236,7 @@
       }
     }
 
-    status.textContent = `총 ${slicedImages.length}개의 조각으로 분할 완료되었습니다 (72 DPI 설정됨).`;
+    status.textContent = `총 ${slicedImages.length}개의 조각으로 분할 완료되었습니다 (72 DPI 설정 적용).`;
     downloadZipBtn.disabled = false;
   }
 
