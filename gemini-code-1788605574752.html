@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>PNG 이미지 360x360 분할기 (ZIP)</title>
+  <!-- JSZip 라이브러리 내장 (외부 네트워크 의존성 제거) -->
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: #f4f6f9;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 16px;
+    }
+    .container {
+      background: white;
+      padding: 24px;
+      border-radius: 16px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+      width: 100%;
+      max-width: 600px;
+      text-align: center;
+    }
+    h2 { margin-top: 0; color: #222; font-size: 1.4rem; }
+    p { color: #666; font-size: 0.95rem; line-height: 1.4; }
+    .file-input-wrapper {
+      margin: 20px 0;
+      padding: 20px;
+      border: 2px dashed #007bff;
+      border-radius: 12px;
+      background: #f8f9fa;
+    }
+    input[type="file"] { width: 100%; font-size: 1rem; }
+    button {
+      width: 100%;
+      background-color: #007bff;
+      color: white;
+      border: none;
+      padding: 16px;
+      font-size: 1rem;
+      font-weight: bold;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    button:disabled { background-color: #ccc; cursor: not-allowed; }
+    button:hover:not-------------:disabled { background-color: #0056b3; }
+    #status {
+      margin-top: 15px;
+      font-weight: bold;
+      color: #007bff;
+      font-size: 0.95rem;
+    }
+    #preview-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+      margin-top: 20px;
+      max-height: 360px;
+      overflow-y: auto;
+      border: 1px solid #eee;
+      border-radius: 8px;
+      padding: 8px;
+      background: #fafafa;
+      -webkit-overflow-scrolling: touch;
+    }
+    #preview-grid img {
+      width: 100%;
+      height: auto;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      display: block;
+      image-rendering: pixelated;
+    }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <h2>PNG 이미지 360x360 분할기</h2>
+  <p>1440x2880 PNG 이미지를 360x360 크기의 조각 32개로 분할하여 ZIP 파일로 저장합니다.</p>
+  
+  <div class="file-input-wrapper">
+    <input type="file" id="imageInput" accept="image/png">
+  </div>
+  
+  <button id="downloadZipBtn" disabled>ZIP 압축파일로 다운로드 (총 32장)</button>
+  
+  <div id="status"></div>
+  <div id="preview-grid"></div>
+</div>
+
+<script>
+  const imageInput = document.getElementById('imageInput');
+  const downloadZipBtn = document.getElementById('downloadZipBtn');
+  const status = document.getElementById('status');
+  const previewGrid = document.getElementById('preview-grid');
+
+  let slicedImages = [];
+
+  imageInput.addEventListener('change', function(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    if (file.type !== 'image/png') {
+      alert('PNG 파일만 지원합니다.');
+      return;
+    }
+
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+
+    img.onload = function() {
+      if (img.width !== 1440 || img.height !== 2880) {
+        if (!confirm(`업로드한 이미지 크기가 ${img.width}x${img.height}입니다. 1440x2880 권장 크기와 다릅니다. 그래도 진행하시겠습니까?`)) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+      }
+
+      processImage(img);
+      URL.revokeObjectURL(url);
+    };
+
+    img.src = url;
+  });
+
+  function processImage(img) {
+    slicedImages = [];
+    previewGrid.innerHTML = '';
+    
+    const tileWidth = 360;
+    const tileHeight = 360;
+    
+    const cols = Math.floor(img.width / tileWidth);
+    const rows = Math.floor(img.height / tileHeight);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = tileWidth;
+    canvas.height = tileHeight;
+    const ctx = canvas.getContext('2d', { alpha: true });
+
+    // 픽셀 손실 및 보정 방지
+    ctx.imageSmoothingEnabled = false;
+
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        ctx.clearRect(0, 0, tileWidth, tileHeight);
+        ctx.drawImage(
+          img, 
+          c * tileWidth, r * tileHeight, tileWidth, tileHeight, 
+          0, 0, tileWidth, tileHeight
+        );
+
+        const dataUrl = canvas.toDataURL('image/png');
+        const fileName = `tile_row${r + 1}_col${c + 1}.png`;
+
+        slicedImages.push({ dataUrl, fileName });
+
+        const previewImg = document.createElement('img');
+        previewImg.src = dataUrl;
+        previewGrid.appendChild(previewImg);
+      }
+    }
+
+    status.textContent = `총 ${slicedImages.length}개의 조각으로 분할 완료되었습니다.`;
+    downloadZipBtn.disabled = false;
+  }
+
+  // ZIP 파일 저장 (안정성 강화)
+  downloadZipBtn.addEventListener('click', async function() {
+    if (typeof JSZip === 'undefined') {
+      alert('ZIP 라이브러리를 로드하는 중입니다. 잠시 후 다시 시도해주세요.');
+      return;
+    }
+
+    downloadZipBtn.disabled = true;
+    status.textContent = 'ZIP 압축 파일을 생성하는 중...';
+
+    try {
+      const zip = new JSZip();
+
+      slicedImages.forEach(item => {
+        // Base64 데이터를 Pure Binary 데이터로 변환하여 멈춤 현상 방지
+        const base64Data = item.dataUrl.replace(/^data:image\/png;base64,/, "");
+        zip.file(item.fileName, base64Data, { base64: true });
+      });
+
+      // STORE 방식(무압축 묶음)을 적용하여 태블릿/모바일 처리 속도 대폭 향상
+      const blob = await zip.generateAsync({ 
+        type: "blob",
+        compression: "STORE" 
+      });
+
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'sliced_images_360x360.zip';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+
+      status.textContent = 'ZIP 파일 다운로드가 완료되었습니다!';
+    } catch (err) {
+      alert('ZIP 파일 생성 중 오류가 발생했습니다: ' + err.message);
+      status.textContent = '오류가 발생했습니다.';
+    } finally {
+      downloadZipBtn.disabled = false;
+    }
+  });
+</script>
+
+</body>
+</html>
